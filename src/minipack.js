@@ -1,4 +1,5 @@
 const fs = require('fs')
+const path = require('path')
 const babelParser = require('@babel/parser')
 const traverse = require('babel-traverse').default
 const { transformFromAst } = require('babel-core')
@@ -7,6 +8,13 @@ const { transformFromAst } = require('babel-core')
 let id = 0
 
 /**
+ *
+ * @param {string} filename 文件路径
+ * @returns {object} asset
+ * @returns {number} asset.id
+ * @returns {string} asset.code 结果babel转化后的代码字符串
+ * @returns {array} asset.dependencies 依赖项列表
+ * @returns {string} asset.filename 文件路径
  */
 function createAsset (filename) {
   // 读取文本
@@ -46,7 +54,40 @@ function createAsset (filename) {
   }
 }
 
+/**
+ * 由入口进行深度优先遍历，将依赖关系图添加到列表中
+ * @param {object} entryAsset 这是一个对象，含有id,code,dependencies,filename这些字段
+ * @param {number} entryAsset.id
+ * @param {string} entryAsset.code 结果babel转化后的代码字符串
+ * @param {array} entryAsset.dependencies 依赖项列表
+ * @param {string} entryAsset.filename 文件路径
+ * @return {array} queue 整个同步依赖的模块列表
+ */
+function createGraph (entryAsset) {
+  const queue = [entryAsset]
+  for (const asset of queue) {
+    // 得到asset的路径（也就是去掉它的文件名），注意这里需要引入node的path模块
+    const dirName = path.dirname(asset.filename)
+    // 这个mapping是为了可以通过路径找到对应asset的方式，形式为dependence映射到id
+    asset.mapping = {}
+    // 接下来我们遍历asset的dependencies列表
+    asset.dependencies.forEach(relativePath => {
+      // 拼接出绝对路径
+      const absolutePath = path.join(dirName, relativePath)
+      // 调用步骤1的createAsset方法
+      const subAsset = createAsset(absolutePath)
+      // 添加到队列中，继续循环（这相当于是一个多叉树的循环式深度优先遍历）
+      queue.push(subAsset)
+
+      // 记录dependence跟id的映射关系
+      asset.mapping[relativePath] = subAsset.id
+    })
+  }
+  return queue
+}
+
 module.exports = entry => {
-  const asset = createAsset(entry)
-  console.log(asset)
+  const entryAsset = createAsset(entry)
+  const graph = createGraph(entryAsset)
+  console.log(graph)
 }
