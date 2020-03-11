@@ -5,7 +5,7 @@ const traverse = require('babel-traverse').default
 const { transformFromAst } = require('babel-core')
 
 // 每次调用createAsset就会递增
-let id = 0
+let ID = 0
 
 /**
  *
@@ -47,7 +47,7 @@ function createAsset (filename) {
 
   // 在此我们需要用一个id字段进行索引，便于后续通过id查找到对应的依赖项，所以我们在函数外定义了一个id字段，从0开始，每次调用createAsset都会递增
   return {
-    id: id++,
+    id: ID++,
     code,
     dependencies,
     filename
