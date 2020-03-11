@@ -86,8 +86,52 @@ function createGraph (entryAsset) {
   return queue
 }
 
+/**
+ * @param {array} graph 调用步骤2`createGraph`产生的依赖关系列表
+ * @return {string} 带有依赖关系并且可执行的代码字符串
+ */
+function bundle (graph) {
+  // 由graph构建出一个id索引的对象，key为id，value为数组，第一位是可执行的函数，第二位是mapping（便于查找依赖）
+  // 由于我们最终是要输出代码字符串，所以在此我们将此拼接成字符串
+  let module = ''
+  graph.forEach(item => {
+    // 在这里，我们用函数来封装局部作用域
+    module += `${item.id}: [
+      function(require, module, exports) {
+        ${item.code}
+      },
+      ${JSON.stringify(item.mapping)}
+    ],`
+  })
+
+  // 注意：这段很重要，webpack编译完一般就是类似这样子的代码字符串
+  // 使用立即执行函数包裹起来，避免污染全局作用域
+  const result = `
+    (function(modules) {
+      function require(id) {
+        const [fn, mapping] = modules[id]
+        
+        function localRequire(path) {
+          return require(mapping[path])
+        }
+        // 执行模块化后的函数
+        const module = {
+          exports: {}
+        }
+        
+        fn(localRequire, module, module.exports)
+        return module.exports
+      }
+    
+      // 首先执行的是入口文件，也就是id为0
+      require(0)
+    })({${module}})
+  `
+  return result
+}
+
 module.exports = entry => {
   const entryAsset = createAsset(entry)
   const graph = createGraph(entryAsset)
-  console.log(graph)
+  return bundle(graph)
 }
