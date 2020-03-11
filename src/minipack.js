@@ -108,7 +108,14 @@ function bundle (graph) {
   // 使用立即执行函数包裹起来，避免污染全局作用域
   const result = `
     (function(modules) {
+      // 缓存module返回的exports对象，以id为索引
+      const moduleCache = {}
       function require(id) {
+        // 优先从缓存对象中读取
+        if (moduleCache[id]) {
+          return moduleCache[id]
+        }
+        
         const [fn, mapping] = modules[id]
         
         function localRequire(path) {
@@ -118,7 +125,8 @@ function bundle (graph) {
         const module = {
           exports: {}
         }
-        
+        // 注意，在执行fn函数前就得先缓存起来，避免循环引用的问题
+        moduleCache[id] = module.exports
         fn(localRequire, module, module.exports)
         return module.exports
       }
