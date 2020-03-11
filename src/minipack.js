@@ -65,6 +65,8 @@ function createAsset (filename) {
  */
 function createGraph (entryAsset) {
   const queue = [entryAsset]
+  // 用来检验循环引用导致的死循环问题，key为绝对路径，value为module id
+  const pathMap = {}
   for (const asset of queue) {
     // 得到asset的路径（也就是去掉它的文件名），注意这里需要引入node的path模块
     const dirName = path.dirname(asset.filename)
@@ -74,6 +76,12 @@ function createGraph (entryAsset) {
     asset.dependencies.forEach(relativePath => {
       // 拼接出绝对路径
       const absolutePath = path.join(dirName, relativePath)
+      // 如果缓存中已经有该路径，直接将其对应的module id赋值到mapping上
+      if (Object.prototype.hasOwnProperty.call(pathMap, absolutePath)) {
+        asset.mapping[relativePath] = pathMap[absolutePath]
+        return
+      }
+
       // 调用步骤1的createAsset方法
       const subAsset = createAsset(absolutePath)
       // 添加到队列中，继续循环（这相当于是一个多叉树的循环式深度优先遍历）
@@ -81,6 +89,8 @@ function createGraph (entryAsset) {
 
       // 记录dependence跟id的映射关系
       asset.mapping[relativePath] = subAsset.id
+      // 新增代码：缓存下来
+      pathMap[absolutePath] = subAsset.id
     })
   }
   return queue
