@@ -1,7 +1,10 @@
-const minipack = require('../src/minipack')
 
-const result = minipack('./entry.js')
-// 打印关联之后的代码字符串
-console.log(result)
-// 使用eval执行，确定结果是否正确
-// eval(result)
+const button = document.createElement('button')
+button.innerText = '点击获取异步脚本'
+button.onclick = function () {
+  import('./print.js').then(exports => {
+    exports.print('this is a demo of aysnc load')
+  })
+}
+
+document.body.appendChild(button)
