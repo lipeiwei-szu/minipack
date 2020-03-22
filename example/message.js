@@ -1,3 +1,9 @@
-import { name } from './name.js'
+export default 'hello static'
 
-export default `hello ${name}`
+function fn () {
+  import('./name.js').then(module => {
+    console.log(module)
+  })
+}
+
+setTimeout(fn, 2000)

@@ -10,13 +10,14 @@ let ID = 0
 /**
  *
  * @param {string} filename 文件路径
+ * @param {boolean} isDynamic 是否异步加载的 默认为false
  * @returns {object} asset
  * @returns {number} asset.id
  * @returns {string} asset.code 结果babel转化后的代码字符串
  * @returns {array} asset.dependencies 依赖项列表
  * @returns {string} asset.filename 文件路径
  */
-function createAsset (filename) {
+function createAsset (filename, isDynamic = false) {
   // 读取文本
   const content = fs.readFileSync(filename, 'utf-8')
   // 这一步我们需要找到这个文件中`import xxx from './xxx.js'`或者`import './xxx.js'`这种格式的文本，并将其中的路径值取出来
@@ -30,12 +31,20 @@ function createAsset (filename) {
   // 这时候，我们需要从AST中找到`import` token，并把它的value值记录下来
   // 我们会用到一个ast遍历器，叫做`babel-traverse`，文档见`https://babeljs.io/docs/en/babel-traverse`
 
-  // 存储依赖项路径的列表
+  // 存储依赖项路径的列表（同步的）
   const dependencies = []
+  // 异步的
+  const dynamicDependencies = []
   // 找到所有的import关键token
   traverse(ast, {
     ImportDeclaration: ({ node }) => {
       dependencies.push(node.source.value)
+    },
+    // 异步加载
+    Import: function (path) {
+      const parent = path.parent
+      // 路径
+      dynamicDependencies.push(parent.arguments[0].value)
     }
   })
 
@@ -49,7 +58,9 @@ function createAsset (filename) {
   return {
     id: ID++,
     code,
+    isDynamic,
     dependencies,
+    dynamicDependencies,
     filename
   }
 }
@@ -67,31 +78,39 @@ function createGraph (entryAsset) {
   const queue = [entryAsset]
   // 用来检验循环引用导致的死循环问题，key为绝对路径，value为module id
   const pathMap = {}
+
+  //
+  function fn (relativePath, dirName, asset, isDynamic) {
+    // 拼接出绝对路径
+    const absolutePath = path.join(dirName, relativePath)
+    // 如果缓存中已经有该路径，直接将其对应的module id赋值到mapping上
+    if (Object.prototype.hasOwnProperty.call(pathMap, absolutePath)) {
+      asset.mapping[relativePath] = pathMap[absolutePath]
+      return
+    }
+
+    // 调用步骤1的createAsset方法
+    const subAsset = createAsset(absolutePath, isDynamic)
+    // 添加到队列中，继续循环（这相当于是一个多叉树的循环式深度优先遍历）
+    queue.push(subAsset)
+
+    // 记录dependence跟id的映射关系
+    asset.mapping[relativePath] = subAsset.id
+    // 新增代码：缓存下来
+    pathMap[absolutePath] = subAsset.id
+  }
+
   for (const asset of queue) {
     // 得到asset的路径（也就是去掉它的文件名），注意这里需要引入node的path模块
     const dirName = path.dirname(asset.filename)
     // 这个mapping是为了可以通过路径找到对应asset的方式，形式为dependence映射到id
     asset.mapping = {}
     // 接下来我们遍历asset的dependencies列表
-    asset.dependencies.forEach(relativePath => {
-      // 拼接出绝对路径
-      const absolutePath = path.join(dirName, relativePath)
-      // 如果缓存中已经有该路径，直接将其对应的module id赋值到mapping上
-      if (Object.prototype.hasOwnProperty.call(pathMap, absolutePath)) {
-        asset.mapping[relativePath] = pathMap[absolutePath]
-        return
-      }
 
-      // 调用步骤1的createAsset方法
-      const subAsset = createAsset(absolutePath)
-      // 添加到队列中，继续循环（这相当于是一个多叉树的循环式深度优先遍历）
-      queue.push(subAsset)
-
-      // 记录dependence跟id的映射关系
-      asset.mapping[relativePath] = subAsset.id
-      // 新增代码：缓存下来
-      pathMap[absolutePath] = subAsset.id
-    })
+    // 同步的
+    asset.dependencies.forEach(relativePath => fn(relativePath, dirName, asset, asset.isDynamic))
+    // 异步动态加载的
+    asset.dynamicDependencies.forEach(relativePath => fn(relativePath, dirName, asset, true))
   }
   return queue
 }
@@ -104,7 +123,8 @@ function bundle (graph) {
   // 由graph构建出一个id索引的对象，key为id，value为数组，第一位是可执行的函数，第二位是mapping（便于查找依赖）
   // 由于我们最终是要输出代码字符串，所以在此我们将此拼接成字符串
   let module = ''
-  graph.forEach(item => {
+  // 只筛选出同步加载的
+  graph.filter(item => !item.isDynamic).forEach(item => {
     // 在这里，我们用函数来封装局部作用域
     module += `${item.id}: [
       function(require, module, exports) {
