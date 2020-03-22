@@ -37,22 +37,26 @@ function createAsset (filename, isDynamic = false) {
   const dynamicDependencies = []
   // 找到所有的import关键token
   traverse(ast, {
-    ImportDeclaration: ({ node }) => {
+    ImportDeclaration: (path) => {
+      const node = path.node
       dependencies.push(node.source.value)
     },
     // 异步加载
     Import: function (path) {
       const parent = path.parent
-      // 路径
+      // 将路径取出来
       dynamicDependencies.push(parent.arguments[0].value)
     }
   })
 
   // 统一将AST编译到低版本CommenJS，`transformFromAst`是babel-core提供的方法
-  const { code } = transformFromAst(ast, null, {
+  let { code } = transformFromAst(ast, null, {
     // 这里需要对应安装`babel-preset-env`哦
     presets: ['env']
   })
+
+  // todo 不知道该怎么去将异步加载的import替换掉，所以目前先用了正则匹配替换
+  code = code.replace(/import\(/g, 'require.async(')
 
   // 在此我们需要用一个id字段进行索引，便于后续通过id查找到对应的依赖项，所以我们在函数外定义了一个id字段，从0开始，每次调用createAsset都会递增
   return {
@@ -107,9 +111,9 @@ function createGraph (entryAsset) {
     asset.mapping = {}
     // 接下来我们遍历asset的dependencies列表
 
-    // 同步的
-    asset.dependencies.forEach(relativePath => fn(relativePath, dirName, asset, asset.isDynamic))
-    // 异步动态加载的
+    // todo 这里逻辑怪怪的（一个异步模块依赖了其它模块，该怎么办）
+    asset.dependencies.forEach(relativePath => fn(relativePath, dirName, asset, false))
+    // 异步动态加载
     asset.dynamicDependencies.forEach(relativePath => fn(relativePath, dirName, asset, true))
   }
   return queue
@@ -117,59 +121,153 @@ function createGraph (entryAsset) {
 
 /**
  * @param {array} graph 调用步骤2`createGraph`产生的依赖关系列表
- * @return {string} 带有依赖关系并且可执行的代码字符串
+ * @param {string} distPath 打包路径
+ * @return {object} 带有依赖关系并且可执行的代码字符串
  */
-function bundle (graph) {
-  // 由graph构建出一个id索引的对象，key为id，value为数组，第一位是可执行的函数，第二位是mapping（便于查找依赖）
-  // 由于我们最终是要输出代码字符串，所以在此我们将此拼接成字符串
+function bundle (graph, distPath) {
+  if (!fs.existsSync(distPath)) {
+    // 新建目录
+    fs.mkdirSync(distPath)
+  }
+
   let module = ''
-  // 只筛选出同步加载的
-  graph.filter(item => !item.isDynamic).forEach(item => {
-    // 在这里，我们用函数来封装局部作用域
-    module += `${item.id}: [
-      function(require, module, exports) {
-        ${item.code}
-      },
-      ${JSON.stringify(item.mapping)}
-    ],`
+  graph.forEach(item => {
+    if (item.isDynamic) {
+      // 动态加载
+      const chunk = `
+        (function() {
+          window.webpackJsonpCallback({
+            id: ${item.id},
+            fn: function(require, module, exports) {
+              ${item.code}
+            },
+            mapping: ${JSON.stringify(item.mapping)}
+          })
+        })()
+      `
+      // 写入文件
+      fs.writeFile(`${distPath}/${item.id}.js`, chunk, 'utf8', function (error) {
+        if (error) {
+          console.warn(error)
+        } else {
+          console.log(`写入${item.id}.js成功`)
+        }
+      })
+    } else {
+      // 同步加载
+      // 由graph构建出一个id索引的对象，key为id，value为数组，第一位是可执行的函数，第二位是mapping（便于查找依赖）
+      // 在这里，我们用函数来封装局部作用域
+      module += `${item.id}: [
+        function(require, module, exports) {
+          ${item.code}
+        },
+        ${JSON.stringify(item.mapping)}
+      ],`
+    }
   })
 
   // 注意：这段很重要，webpack编译完一般就是类似这样子的代码字符串
   // 使用立即执行函数包裹起来，避免污染全局作用域
-  const result = `
-    (function(modules) {
-      // 缓存module返回的exports对象，以id为索引
-      const moduleCache = {}
-      function require(id) {
-        // 优先从缓存对象中读取
-        if (moduleCache[id]) {
-          return moduleCache[id]
-        }
-        
-        const [fn, mapping] = modules[id]
-        
-        function localRequire(path) {
-          return require(mapping[path])
-        }
-        // 执行模块化后的函数
-        const module = {
-          exports: {}
-        }
-        // 注意，在执行fn函数前就得先缓存起来，避免循环引用的问题
-        moduleCache[id] = module.exports
-        fn(localRequire, module, module.exports)
-        return module.exports
-      }
+  const main = `
+(function (modules) {
+  //
+  const installedChunks = {}
+
+  // 缓存module返回的exports对象，以id为索引
+  const moduleCache = {}
+  function require(id) {
+    // 优先从缓存对象中读取
+    if (moduleCache[id]) {
+      return moduleCache[id]
+    }
+
+    if (!modules[id]) {
+      return null
+    }
+
+    const [fn, mapping] = modules[id]
     
-      // 首先执行的是入口文件，也就是id为0
-      require(0)
-    })({${module}})
-  `
-  return result
+    function localRequire(path) {
+      return require(mapping[path])
+    }
+
+    // 异步加载
+    localRequire.async = function (path) {
+      const chunkId = mapping[path]
+      if (installedChunks[chunkId] === 0) {
+        // 参照webpack，为0则代表已加载成功
+        return Promise.resolve(require(chunkId))
+      } else if (installedChunks[chunkId]) {
+        // 加载中，返回正在等待被处理的promise
+        return installedChunks[chunkId][2]
+      } else {
+        const promise = new Promise((resolve, reject) => {
+          installedChunks[chunkId] = [resolve, reject]
+        })
+
+        installedChunks[chunkId].push(promise)
+
+        // 构建jsonp请求
+        const script = document.createElement('script')
+        script.charset = 'utf-8'
+        script.src = chunkId + '.js'
+        // 超时处理
+        const timeout = setTimeout(function () {
+          onScriptComplete({type: 'timeout', target: script})
+        }, 120000)
+
+        function onScriptComplete(event) {
+          // todo
+        }
+
+        script.onerror = script.onload = onScriptComplete
+        // 启动JSONP请求
+        document.head.appendChild(script)
+        return promise
+      }
+    }
+
+    // 执行模块化后的函数
+    const module = {
+      exports: {}
+    }
+    // 注意，在执行fn函数前就得先缓存起来，避免循环引用的问题
+    moduleCache[id] = module.exports
+    fn(localRequire, module, module.exports)
+    return module.exports
+  }
+
+  window.webpackJsonpCallback = function (data) {
+    const {id, fn, mapping} = data
+    // 将fn跟mapping缓存到modules中
+    modules[id] = [fn, mapping]
+
+    // 取出
+    const [resolve] = installedChunks[id]
+    // 表示加载成功
+    installedChunks[id] = 0
+
+    resolve(require(id))
+  }
+
+  // 首先执行的是入口文件，也就是id为0
+  require(0)
+})({${module}})
+`
+  // 写入文件
+  fs.writeFile(`${distPath}/main.js`, main, 'utf8', function (error) {
+    if (error) {
+      console.warn(error)
+    } else {
+      console.log('写入main.js成功')
+    }
+  })
 }
 
-module.exports = entry => {
+function build (entry, distPath) {
   const entryAsset = createAsset(entry)
   const graph = createGraph(entryAsset)
-  return bundle(graph)
+  return bundle(graph, distPath)
 }
+
+module.exports = build
