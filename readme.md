@@ -9,7 +9,9 @@
 + [x] 同步加载
 + [x] module缓存
 + [x] 循环引用
-+ [ ] 异步加载
++ [x] 异步加载（已完成，待测试完善）
 
 ### 实现逻辑
-见[如何实现一个支持异步加载的打包工具（一）](https://github.com/lipeiwei-szu/blog/issues/2)
++ [如何实现一个支持异步加载的打包工具（一）](https://github.com/lipeiwei-szu/blog/issues/2)
++ [如何实现一个支持异步加载的打包工具（二）](https://github.com/lipeiwei-szu/blog/issues/3)
++ 如何实现一个支持异步加载的打包工具（三）（todo）
