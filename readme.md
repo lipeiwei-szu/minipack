@@ -15,3 +15,6 @@
 + [如何实现一个支持异步加载的打包工具（一）](https://github.com/lipeiwei-szu/blog/issues/2)
 + [如何实现一个支持异步加载的打包工具（二）](https://github.com/lipeiwei-szu/blog/issues/3)
 + 如何实现一个支持异步加载的打包工具（三）（todo）
+
+### 运行
+运行根目录下的build.js，就会将example文件夹中的文件打包到dist目录中，然后打开dist/index.html就能看到
